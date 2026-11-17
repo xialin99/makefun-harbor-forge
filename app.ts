@@ -64,7 +64,7 @@ export function createApp(){return createServer(async(req,res)=>{
  if(req.headers.authorization!=='Bearer '+process.env.MAKEFUN_SHOP_TOKEN)return send(401,{message:'Bad credentials'});
  const git=p.match(/^\/([^/]+)\/([^/]+)\.git\/(.+)$/);
  if(git){try{return await gitRoute(req,res,repo(git[1],git[2]),p,u)}catch(e:any){return send(e.status??400,{message:e.message})}}
- let b:any={};try{const chunks=[];for await(const c of req)chunks.push(c);const raw=Buffer.concat(chunks).toString();if(raw)b=JSON.parse(raw)}catch{return send(400,p==='/mcp'?{jsonrpc:'2.0',id:null,error:{code:-32700,message:'Parse error'}}:{message:'Malformed JSON'})}
+ let b:any={};try{const raw=await new Promise<string>((resolve,reject)=>{const chunks:Buffer[]=[];req.on('data',c=>chunks.push(c));req.on('end',()=>resolve(Buffer.concat(chunks).toString()));req.on('error',reject)});if(raw)b=JSON.parse(raw)}catch{return send(400,p==='/mcp'?{jsonrpc:'2.0',id:null,error:{code:-32700,message:'Parse error'}}:{message:'Malformed JSON'})}
  try{
  if(p==='/mcp'){const r=Array.isArray(b)?b.map(rpc):rpc(b);return r===null?send(202,{}):send(200,r)}
  if(p==='/api/graphql')return send(200,graph(b));
