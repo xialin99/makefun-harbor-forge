@@ -8,6 +8,7 @@ function save(r:any,branch:string,files:Map<string,any>,message:string){
  const root=tree(''),parent=r.refs.get(branch);const data=Buffer.from('tree '+root+'\n'+(parent?'parent '+parent+'\n':'')+'author Harbor <harbor@example.invalid> 1700000000 +0000\ncommitter Harbor <harbor@example.invalid> 1700000000 +0000\n\n'+message+'\n');const id=object(r,'commit',data);r.refs.set(branch,id);return {sha:id,message,parents:parent?[{sha:parent}]:[]};
 }
 const repos=new Map<string,any>();let seq=1;let account=process.env.MAKEFUN_SHOP_LOGIN??'';
+const responseCache=new WeakMap<object,string>();
 const sha=(s:string)=>createHash('sha1').update(s).digest('hex');
 const fail=(status:number,message:string):never=>{throw {status,message}};
 function repo(owner:string,name:string){
@@ -44,7 +45,7 @@ function graph(b:any):any{
  const a=v.input??v;const global=(id:string)=>[...repos.values()].flatMap(r=>[{r,item:r},...r.issues.map((item:any)=>({r,item})),...r.pulls.map((item:any)=>({r,item}))]).find(({item})=>item.node_id===id);
  const gql=(p:any)=>({...p,id:p.node_id,state:p.state?.toUpperCase(),headRefName:p.head?.ref,baseRefName:p.base?.ref});
  if(q.includes('createIssue')){const found=global(a.repositoryId);if(!found)return {errors:[{message:'Unknown repository'}]};return {data:{createIssue:{issue:gql(issue(found.r,a))}}}}
- if(q.includes('closeIssue')||q.includes('mergePullRequest')||q.includes('addComment')){const f=global(a.issueId??a.pullRequestId??a.subjectId);if(!f)return {errors:[{message:'Unknown id'}]};if(q.includes('closeIssue')){f.item.state='closed';return {data:{closeIssue:{issue:gql(f.item)}}}}if(q.includes('mergePullRequest')){merge(f.r,f.item.number);return {data:{mergePullRequest:{pullRequest:gql(f.item)}}}}f.item.comments??=[];const c={id:'C_'+seq++,body:a.body};f.item.comments.push(c);return {data:{addComment:{commentEdge:{node:c}}}}}
+ if(q.includes('closeIssue')||q.includes('mergePullRequest')||q.includes('addComment')){const f=global(a.issueId??a.pullRequestId??a.subjectId);if(!f)return {errors:[{message:'Unknown id'}]};if(q.includes('closeIssue')){f.item.state='closed';responseCache.delete(f.item);return {data:{closeIssue:{issue:gql(f.item)}}}}if(q.includes('mergePullRequest')){merge(f.r,f.item.number);return {data:{mergePullRequest:{pullRequest:gql(f.item)}}}}f.item.comments??=[];const c={id:'C_'+seq++,body:a.body};f.item.comments.push(c);responseCache.delete(f.item);return {data:{addComment:{commentEdge:{node:c}}}}}
  if(/\bnode\s*\(/.test(q)){const f=global(v.id??q.match(/id:\s*"([^"]+)"/)?.[1]);return {data:{node:f?{...view(f.r),id:f.item.node_id,nameWithOwner:f.r.full_name,__typename:'Repository'}:null}}}
  const viewerFields=q.match(/viewer\s*{([^}]*)}/)?.[1]?.match(/[A-Za-z_][A-Za-z_0-9]*/g)??[];
  for(const field of viewerFields)if(!['login','id','name','email','avatarUrl','url','__typename'].includes(field))return {errors:[{message:'Cannot query field '+field+' on type User'}]};
@@ -59,6 +60,10 @@ function graph(b:any):any{
  return {data:{repository:{...view(r),id:r.node_id,databaseId:r.id,nameWithOwner:r.full_name,viewerPermission:'ADMIN',hasIssuesEnabled:true,defaultBranchRef:{name:r.default_branch},issues:connection(issues),pullRequests:connection(r.pulls),issue:r.issues.find((i:any)=>i.number===number)?convert(r.issues.find((i:any)=>i.number===number)):null,pullRequest:r.pulls.find((i:any)=>i.number===number)?convert(r.pulls.find((i:any)=>i.number===number)):null}}};
 }
 export function createApp(){return createServer(async(req,res)=>{
+ if(req.method==='GET'&&req.headers.authorization==='Bearer '+process.env.MAKEFUN_SHOP_TOKEN){
+  const match=req.url?.match(/^\/api\/v3\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)$/);
+  if(match){const r=repos.get(decodeURIComponent(match[1])+'/'+decodeURIComponent(match[2]));const item=r?.issues.find((i:any)=>i.number===+match[3]);if(item){let text=responseCache.get(item);if(!text){text=JSON.stringify(item);responseCache.set(item,text)}res.writeHead(200,{'content-type':'application/json','x-github-request-id':'harbor-'+seq});res.end(text);return}}
+ }
  const u=new URL(req.url??'/','http://forge'),p=decodeURIComponent(u.pathname),m=req.method??'GET';const send=(status:number,data:any,headers:any={})=>{res.writeHead(status,{'content-type':'application/json','x-github-request-id':'harbor-'+seq,...headers});res.end(status===204?'':JSON.stringify(data))};
  if(p==='/healthz')return send(200,{ok:true});
  if(req.headers.authorization!=='Bearer '+process.env.MAKEFUN_SHOP_TOKEN)return send(401,{message:'Bad credentials'});
@@ -77,13 +82,13 @@ export function createApp(){return createServer(async(req,res)=>{
  if(tail==='git/refs'&&m==='POST'){r.refs.set(b.ref.replace(/^refs\/heads\//,''),b.sha);return send(201,{ref:b.ref,object:{sha:b.sha,type:'commit'}})}
  if(tail==='branches')return send(200,[...r.refs].filter(([name]:any)=>!name.startsWith('refs/')).map(([name,sha]:any)=>({name,commit:{sha}})));
  if(tail.startsWith('commits')){const id=tail.split('/')[1]??u.searchParams.get('sha')??r.default_branch;const oid=r.refs.get(id)??id;const data=r.objects?.get(oid)?.data.toString();if(!data)fail(404,'Not Found');const entry={sha:oid,commit:{message:data.split('\n\n').slice(1).join('\n\n').trim(),author:{name:'Harbor',email:'harbor@example.invalid'},committer:{name:'Harbor',email:'harbor@example.invalid'}},parents:[...data.matchAll(/^parent ([0-9a-f]{40})$/gm)].map((m:any)=>({sha:m[1]}))};return send(200,tail==='commits'?[entry]:entry)}
- const comments=tail.match(/^issues\/(\d+)\/comments$/);if(comments){const i=r.issues.find((i:any)=>i.number===+comments[1])??fail(404,'Not Found');i.comments??=[];if(m==='POST'){const comment={id:seq++,body:b.body,user:r.owner};i.comments.push(comment);return send(201,comment)}return send(200,i.comments)}
+ const comments=tail.match(/^issues\/(\d+)\/comments$/);if(comments){const i=r.issues.find((i:any)=>i.number===+comments[1])??fail(404,'Not Found');i.comments??=[];if(m==='POST'){const comment={id:seq++,body:b.body,user:r.owner};i.comments.push(comment);responseCache.delete(i);return send(201,comment)}return send(200,i.comments)}
  if(tail==='labels'){if(m==='POST'){r.labels.push({id:seq++,name:b.name,color:b.color??'ffffff'});return send(201,r.labels.at(-1))}return send(200,r.labels)}
  if(tail==='issues'&&m==='POST')return send(201,issue(r,b));
  if(tail==='issues'){let list=r.issues.filter((i:any)=>!u.searchParams.get('state')||u.searchParams.get('state')==='all'||i.state===u.searchParams.get('state'));if(u.searchParams.get('direction')!=='asc')list=[...list].reverse();return send(200,list)}
  if(tail==='pulls'&&m==='POST')return send(201,pull(r,b));if(tail==='pulls')return send(200,r.pulls.filter((p:any)=>u.searchParams.get('state')==='all'||p.state===(u.searchParams.get('state')??'open')));
  const pf=tail.match(/^pulls\/(\d+)\/files$/);if(pf){const pr=r.pulls.find((p:any)=>p.number===+pf[1])??fail(404,'Not Found');return send(200,changed(r,pr))}
- const n=tail.match(/^(issues|pulls)\/(\d+)(\/merge)?$/);if(n){if(n[3])return send(200,merge(r,+n[2]));const item=r[n[1]].find((i:any)=>i.number===+n[2])??fail(404,'Not Found');if(m==='PATCH')Object.assign(item,b);return send(200,item)}
+ const n=tail.match(/^(issues|pulls)\/(\d+)(\/merge)?$/);if(n){if(n[3])return send(200,merge(r,+n[2]));const item=r[n[1]].find((i:any)=>i.number===+n[2])??fail(404,'Not Found');if(m==='PATCH'){Object.assign(item,b);responseCache.delete(item)}return send(200,item)}
  if(tail.startsWith('contents/')){const path=tail.slice(9),branch=b.branch??u.searchParams.get('ref')??r.default_branch,files=snapshot(r,branch),old=files.get(path);
  if(m==='GET'){if(old)return send(200,old);const prefix=path.replace(/\/$/,'')+'/',list=[...files.values()].filter(e=>e.path.startsWith(prefix)&&!e.path.slice(prefix.length).includes('/'));if(list.length)return send(200,list);fail(404,'Not Found')}
  if(m==='PUT'){if(old&&b.sha!==old.sha)fail(409,'stale sha');const content=b.content??'',data=Buffer.from(content,'base64'),entry={type:'file',name:path.split('/').at(-1),path,encoding:'base64',content,size:data.length,sha:object(r,'blob',data)};files.set(path,entry);return send(old?200:201,{content:entry,commit:save(r,branch,files,b.message??'Update '+path)})}
@@ -92,4 +97,5 @@ export function createApp(){return createServer(async(req,res)=>{
  fail(404,'Not Found');
  }catch(e:any){send(e.status??500,{message:e.message??'Internal error'})}
 })}
+
 
