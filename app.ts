@@ -13,7 +13,7 @@ const sha=(s:string)=>createHash('sha1').update(s).digest('hex');
 const fail=(status:number,message:string):never=>{throw {status,message}};
 function repo(owner:string,name:string){
  if(!account&&[...repos.values()].some(r=>r.name===name&&r.owner.login==='agent')){
-  account=owner;for(const r of [...repos.values()])if(r.owner.login==='agent'){repos.delete(r.full_name);r.owner.login=owner;r.full_name=owner+'/'+r.name;repos.set(r.full_name,r)}
+  account=owner;for(const r of [...repos.values()])if(r.owner.login==='agent'){repos.delete(r.full_name);r.owner.login=owner;for(const issue of r.issues)responseCache.delete(issue);r.full_name=owner+'/'+r.name;repos.set(r.full_name,r)}
  }
  return repos.get(owner+'/'+name)??fail(404,'Not Found')
 }
@@ -21,7 +21,7 @@ function create(name:string,owner=account||'agent',description='',privateRepo=fa
  if(!name)fail(422,'name is required');const key=owner+'/'+name;if(repos.has(key))fail(422,'Repository already exists');
  const r={id:seq++,node_id:'R_'+seq,name,full_name:key,owner:{login:owner,id:1},description,private:privateRepo,default_branch:'main',has_issues:true,permissions:{admin:true,push:true,pull:true},issues:[],pulls:[],labels:[],files:new Map(),refs:new Map(),number:1};repos.set(key,r);return r;
 }
-const view=(r:any)=>{const {issues,pulls,labels,files,refs,number,...data}=r;return {...data,html_url:'http://forge/'+r.full_name,clone_url:'http://forge/'+r.full_name+'.git'}};
+const view=(r:any)=>{const {issues,pulls,labels,files,refs,number,objects,packCache,...data}=r;return {...data,html_url:'http://forge/'+r.full_name,clone_url:'http://forge/'+r.full_name+'.git'}};
 function issue(r:any,b:any){if(!b.title)fail(422,'title is required');if((b.labels??[]).some((s:any)=>!r.labels.some((l:any)=>l.name===(s.name??s))))fail(422,'Unknown label');const n=r.number++;const i={id:seq++,node_id:'I_'+seq,number:n,title:b.title,body:b.body??'',state:'open',labels:(b.labels??[]).map((a:any)=>r.labels.find((l:any)=>l.name===(a.name??a))),user:r.owner,created_at:new Date(1700000000000+n*1000).toISOString()};r.issues.push(i);return i}
 function pull(r:any,b:any){if(!b.title||!b.head||!b.base)fail(422,'title, head and base required');const n=r.number++;const pr={id:seq++,node_id:'P_'+seq,number:n,title:b.title,body:b.body??'',state:'open',merged:false,mergeable:true,head:{ref:b.head,sha:r.refs.get(b.head)??sha(b.head)},base:{ref:b.base,sha:r.refs.get(b.base)??sha(b.base)}};r.pulls.push(pr);return pr}
 function changed(r:any,p:any){const old=snapshot(r,p.base.sha),head=snapshot(r,p.head.sha);return [...new Set([...old.keys(),...head.keys()])].filter(k=>old.get(k)?.sha!==head.get(k)?.sha).map(filename=>({filename,status:!old.has(filename)?'added':!head.has(filename)?'removed':'modified',additions:head.has(filename)?1:0,deletions:old.has(filename)?1:0,changes:1}));}

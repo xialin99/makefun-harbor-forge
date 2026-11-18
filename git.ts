@@ -18,6 +18,37 @@ export async function gitRoute(req:any,res:any,r:any,path:string,u:URL){r.object
  const chunks=[];for await(const b of req)chunks.push(b);const raw=Buffer.concat(chunks);const parsed=lines(raw),text=parsed.out.map(b=>b.toString()).join('');
  if(path.endsWith('git-receive-pack')){let offset=0,commands:string[]=[];while(offset+4<=raw.length){let n=parseInt(raw.toString('ascii',offset,offset+4),16);offset+=4;if(n===0)break;if(n<4)continue;commands.push(raw.subarray(offset,offset+n-4).toString().split('\0')[0].trim());offset+=n-4}let status='unpack ok\n';try{ingest(r,raw.subarray(offset))}catch(e:any){status='unpack '+e.message+'\n'}const result=[packet(status)];for(const cmd of commands){const [old,next,ref]=cmd.split(' ');const key=ref?.startsWith('refs/heads/')?ref.slice(11):ref;let reason='';if(!ref)continue;if(status!=='unpack ok\n')reason='unpacker error';else if(!/^0+$/.test(next)&&!r.objects.has(next))reason='missing object';else if(!/^0+$/.test(old)&&!/^0+$/.test(next)&&!ancestor(r,old,next))reason='non-fast-forward';if(!reason){if(/^0+$/.test(next))r.refs.delete(key);else r.refs.set(key,next)}result.push(packet((reason?'ng '+ref+' '+reason:'ok '+ref)+'\n'))}result.push(Buffer.from('0000'));const body=Buffer.concat(result);return reply('git-receive-pack',raw.includes(Buffer.from('side-band-64k'))?Buffer.concat([packet(Buffer.concat([Buffer.from([1]),body])),Buffer.from('0000')]):body)}
  if(text.includes('command=ls-refs')){const prefixes=parsed.out.map(b=>b.toString().trim()).filter(s=>s.startsWith('ref-prefix ')).map(s=>s.slice(11));let rows=refs();const tip=r.refs.get(r.default_branch);if(tip)rows.unshift(['HEAD',tip]);return reply('git-upload-pack',Buffer.concat([...rows.filter(([ref]:any)=>!prefixes.length||prefixes.some(p=>ref.startsWith(p))).map(([ref,oid]:any)=>packet(oid+' '+ref+(ref==='HEAD'?' symref-target:refs/heads/'+r.default_branch:'')+(text.includes('peel')&&r.objects.get(oid)?.type==='tag'?' peeled:'+r.objects.get(oid).data.toString().match(/^object ([0-9a-f]{40})/m)?.[1]:'')+'\n')),Buffer.from('0000')]))}
- const wants=[...text.matchAll(/want ([0-9a-f]{40})/g)].map(m=>m[1]);const depth=+(text.match(/deepen (\d+)/)?.[1]??0);const cacheKey=JSON.stringify([wants,depth,text.match(/have [0-9a-f]{40}/g),r.objects.size]);r.packCache??=new Map();let cached=r.packCache.get(cacheKey);const {result,shallow}=reachable(r,wants,depth);const haves=[...text.matchAll(/have ([0-9a-f]{40})/g)].map(m=>m[1]);if(!depth){const held=reachable(r,haves,0).result;for(const id of held)result.delete(id)}const data=cached??pack(r,result);if(!cached){if(r.packCache.size>100)r.packCache.clear();r.packCache.set(cacheKey,data)}const pieces=[];const v2=text.includes('command=fetch');if(v2){if(shallow.length){pieces.push(packet('shallow-info\n'),...shallow.map(s=>packet('shallow '+s+'\n')),Buffer.from('0001'))}pieces.push(packet('packfile\n'))}else pieces.push(...shallow.map(s=>packet('shallow '+s+'\n')),...(shallow.length?[Buffer.from('0000')]:[]),packet('NAK\n'));
- for(let i=0;i<data.length;i+=60000)pieces.push(packet(Buffer.concat([Buffer.from([1]),data.subarray(i,i+60000)])));pieces.push(Buffer.from('0000'));return reply('git-upload-pack',Buffer.concat(pieces));
+ const wants = [...text.matchAll(/want ([0-9a-f]{40})/g)].map(match => match[1]);
+ const haves = [...text.matchAll(/have ([0-9a-f]{40})/g)].map(match => match[1]);
+ const depth = Number(text.match(/deepen (\d+)/)?.[1] ?? 0);
+ const v2 = text.includes('command=fetch');
+ const cacheKey = JSON.stringify([v2, wants, haves, depth, r.objects.size]);
+ r.packCache ??= new Map();
+ const cachedResponse = r.packCache.get(cacheKey);
+ if (cachedResponse) return reply('git-upload-pack', cachedResponse);
+
+ const {result, shallow} = reachable(r, wants, depth);
+ if (!depth && haves.length) {
+   for (const id of reachable(r, haves, 0).result) result.delete(id);
+ }
+ const data = pack(r, result);
+ const pieces = [];
+ if (v2) {
+   if (shallow.length) {
+     pieces.push(packet('shallow-info\n'), ...shallow.map(id => packet('shallow ' + id + '\n')), Buffer.from('0001'));
+   }
+   pieces.push(packet('packfile\n'));
+ } else {
+   pieces.push(...shallow.map(id => packet('shallow ' + id + '\n')));
+   if (shallow.length) pieces.push(Buffer.from('0000'));
+   pieces.push(packet('NAK\n'));
+ }
+ for (let offset = 0; offset < data.length; offset += 60000) {
+   pieces.push(packet(Buffer.concat([Buffer.from([1]), data.subarray(offset, offset + 60000)])));
+ }
+ pieces.push(Buffer.from('0000'));
+ const response = Buffer.concat(pieces);
+ if (r.packCache.size >= 100) r.packCache.clear();
+ r.packCache.set(cacheKey, response);
+ return reply('git-upload-pack', response);
 }
