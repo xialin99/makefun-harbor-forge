@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {inflateSync,deflateSync} from 'node:zlib';
 const types:any={1:'commit',2:'tree',3:'blob',4:'tag'};
 const ids:any={commit:1,tree:2,blob:3,tag:4};
+const maxCachedPackBytes=8*1024*1024;
 const digest=(b:Buffer)=>createHash('sha1').update(b).digest();
 export const packet=(s:string|Buffer)=>{const b=Buffer.isBuffer(s)?s:Buffer.from(s);return Buffer.concat([Buffer.from((b.length+4).toString(16).padStart(4,'0')),b])};
 function lines(b:Buffer){let i=0,out:Buffer[]=[];while(i+4<=b.length){const n=parseInt(b.toString('ascii',i,i+4),16);if(!Number.isFinite(n))break;i+=4;if(n<=2){out.push(Buffer.from(n===0?'FLUSH':'DELIM'));continue}if(i+n-4>b.length)break;out.push(b.subarray(i,i+n-4));i+=n-4}return {out,offset:i}}
@@ -22,9 +23,12 @@ export async function gitRoute(req:any,res:any,r:any,path:string,u:URL){r.object
  const haves = [...text.matchAll(/have ([0-9a-f]{40})/g)].map(match => match[1]);
  const depth = Number(text.match(/deepen (\d+)/)?.[1] ?? 0);
  const v2 = text.includes('command=fetch');
- const cacheKey = JSON.stringify([v2, wants, haves, depth, r.objects.size]);
- r.packCache ??= new Map();
- const cachedResponse = r.packCache.get(cacheKey);
+ const cacheKey = JSON.stringify([v2, wants, haves, depth]);
+ if(r.packCache?.objectCount!==r.objects.size){
+   r.packCache={objectCount:r.objects.size,entries:new Map<string,Buffer>(),bytes:0};
+ }
+ const cache=r.packCache;
+ const cachedResponse=cache.entries.get(cacheKey);
  if (cachedResponse) return reply('git-upload-pack', cachedResponse);
 
  const {result, shallow} = reachable(r, wants, depth);
@@ -48,7 +52,13 @@ export async function gitRoute(req:any,res:any,r:any,path:string,u:URL){r.object
  }
  pieces.push(Buffer.from('0000'));
  const response = Buffer.concat(pieces);
- if (r.packCache.size >= 100) r.packCache.clear();
- r.packCache.set(cacheKey, response);
+ if(response.length<=maxCachedPackBytes){
+   if(cache.entries.size>=100||cache.bytes+response.length>maxCachedPackBytes){
+     cache.entries.clear();
+     cache.bytes=0;
+   }
+   cache.entries.set(cacheKey,response);
+   cache.bytes+=response.length;
+ }
  return reply('git-upload-pack', response);
 }
