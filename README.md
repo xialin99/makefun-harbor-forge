@@ -4,6 +4,19 @@
 
 ## 中文
 
+### 第一次使用
+
+安装 [Node.js 的 LTS 长期支持版](https://nodejs.org/en/download)（22.18 或更新）。
+
+1. 在仓库页面点 **Code → Download ZIP**，下载并解压。打开解压后含有 `start-local.ts` 的文件夹。
+2. 在 Windows 文件资源管理器地址栏输入 `powershell` 后按回车。把下面的命令复制到打开的窗口并回车。
+
+```sh
+node start-local.ts
+```
+
+看到服务启动提示后，用浏览器打开 [本地健康检查](http://127.0.0.1:8080/healthz)。显示 `{"ok":true}` 就说明服务启动成功。终端按 **Ctrl+C** 停止。本项目适合想体验 Git 托管接口的人。
+
 内存中的 Git 托管实验，包含 Git Smart HTTP、REST、GraphQL 和 MCP 接口。
 
 ### 本地运行
@@ -13,6 +26,19 @@
 命令行提示默认显示中文。设置 `MAKEFUN_UI_LANG=en` 可显示英文。
 
 ## English
+
+### First use
+
+Install the [Node.js LTS release](https://nodejs.org/en/download), version 22.18 or newer.
+
+1. Choose **Code → Download ZIP**, extract it, then open the extracted project folder.
+2. On Windows, type `powershell` in the File Explorer address bar and press Enter. Run the commands below.
+
+```sh
+node start-local.ts
+```
+
+看到服务启动提示后，用浏览器打开 [本地健康检查](http://127.0.0.1:8080/healthz)。显示 `{"ok":true}` 就说明服务启动成功。终端按 **Ctrl+C** 停止。本项目适合想体验 Git 托管接口的人。
 
 An in-memory Git hosting experiment with Git smart HTTP, REST, GraphQL and MCP interfaces.
 
